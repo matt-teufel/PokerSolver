@@ -5,8 +5,10 @@ name = "pypi"
 
 [packages]
 pypokerengine = "*"
+matplotlib = "*"
 
 [dev-packages]
+matplotlib = "*"
 
 [requires]
 python_version = "3.10"

@@ -21,10 +21,12 @@ class PokerAI(
         hero = round_state["seats"][0]  # our ai bot
         villain = round_state["seats"][1]  # opponent
         pot_size = round_state["pot"]["main"]["amount"]
-        big_blind_size = round_state["small_blind_amount"] * 2
+        small_blind_size = round_state["small_blind_amount"]
+        big_blind_size = small_blind_size * 2
         effective_stack = min(
             hero["stack"], villain["stack"]
         )  # the amount of chips actually in play
+        can_raise = len(valid_actions) > 2
 
         bbs = effective_stack / big_blind_size
         spr = effective_stack / pot_size  # stack to pot ratio
@@ -50,6 +52,8 @@ class PokerAI(
         print("round state " + round_state["street"])
         converted_hole_cards = convert_hole_cards(hole_card)
         community_cards = round_state["community_card"]
+
+        # PREFLOP
         if round_state["street"] == "preflop":
             # check for allin
             closest_chart = find_closest_chart(bbs)
@@ -124,9 +128,9 @@ class PokerAI(
             return handle_action_preflop(
                 action, valid_actions, pot_size, max_bet, big_blind_size, pos
             )
+
+        # FLOP
         elif round_state["street"] == "flop":
-            print("playing the flop")
-            print("current hero range", hero_range)
             hero_range_strength = calculate_range_strength(hero_range, community_cards)
             villain_range_strength = calculate_range_strength(
                 villain_range, community_cards
@@ -137,8 +141,289 @@ class PokerAI(
                 1000, 2, gen_cards(hole_card), gen_cards(community_cards)
             )
             print("hero hole card strength ", hole_card_strength)
-            ## construct our opponent range from preflop history
-            preflop_history = round_state["action_histories"]["preflop"]
+            if pos:
+                # we are the big blind
+                if valid_actions[1]["amount"] == 0:  # checks to us
+                    if (
+                        hero_range_strength > villain_range_strength and can_raise
+                    ):  # good flop for range lets bet
+                        return valid_actions[2]["action"], get_bet_size(
+                            pot_size,
+                            1 / 3,
+                            valid_actions[2]["amount"]["max"],
+                            small_blind_size,
+                        )
+                    else:  # check bad flop back
+                        return valid_actions[1]["action"], valid_actions[1]["amount"]
+                else:
+                    adjust_range_upper(villain_range, 0.5)
+                    villain_range_strength = calculate_range_strength(
+                        villain_range, community_cards
+                    )
+                    if (
+                        hero_range_strength > villain_range_strength
+                        and hole_card_strength > 0.7
+                        and can_raise
+                    ):
+                        # checkraise strong stuff
+                        adjust_range_upper(hero_range, 0.7)
+                        return valid_actions[2]["action"], get_bet_size(
+                            pot_size,
+                            2 / 3,
+                            valid_actions[2]["amount"]["max"],
+                            small_blind_size,
+                        )
+                    elif hole_card_strength > 0.5:  # call medium strenth
+                        adjust_range_lower(hero_range, 0.5)
+                        adjust_range_upper(hero_range, 0.7)
+                        return (
+                            valid_actions[1]["action"],
+                            valid_actions[1]["amount"],
+                        )
+                    else:
+                        # fold if hand is bad
+                        return (
+                            valid_actions[0]["action"],
+                            valid_actions[0]["amount"],
+                        )
+            else:
+                if valid_actions[1]["amount"] == 0:
+                    # we are first to act as small blind
+                    if hero_range_strength < villain_range_strength:
+                        # check if we are out of position and its bad for range
+                        return valid_actions[1]["action"], valid_actions[1]["amount"]
+                    else:
+                        # if good for our range and our hand is strong, lets lead
+                        if hole_card_strength >= 0.6 and can_raise:
+                            adjust_range_upper(hero_range, 0.6)
+                            return valid_actions[2]["action"], get_bet_size(
+                                pot_size,
+                                2 / 3,
+                                valid_actions[2]["amount"]["max"],
+                                small_blind_size,
+                            )
+                        else:  # check if bad for range or hand weak
+                            adjust_range_lower(hero_range, 0.6)
+                            return (
+                                valid_actions[1]["action"],
+                                valid_actions[1]["amount"],
+                            )
+                else:  # big blind has bet at us
+                    adjust_range_upper(
+                        villain_range, 0.5
+                    )  # remove trash from villain range
+                    if (
+                        hole_card_strength >= 0.7 and can_raise
+                    ):  # let's check raise our strong stuff
+                        adjust_range_upper(hero_range, 0.7)
+                        return valid_actions[2]["action"], get_bet_size(
+                            pot_size,
+                            2 / 3,
+                            valid_actions[2]["amount"]["max"],
+                            small_blind_size,
+                        )
+                    elif hole_card_strength >= 0.5:  # call our middling hands
+                        adjust_range_upper(hero_range, 0.5)
+                        return valid_actions[1]["action"], valid_actions[1]["amount"]
+                    else:  # fold our trash
+                        return valid_actions[0]["action"], valid_actions[0]["amount"]
+
+        # TURN
+        elif round_state["street"] == "turn":
+            hero_range_strength = calculate_range_strength(hero_range, community_cards)
+            villain_range_strength = calculate_range_strength(
+                villain_range, community_cards
+            )
+            print("hero range strength ", hero_range_strength)
+            print("villain range strength ", villain_range_strength)
+            hole_card_strength = estimate_hole_card_win_rate(
+                1000, 2, gen_cards(hole_card), gen_cards(community_cards)
+            )
+            print("hero hole card strength ", hole_card_strength)
+            if pos:
+                # we are the big blind
+                if valid_actions[1]["amount"] == 0:  # checks to us
+                    if (
+                        hero_range_strength > villain_range_strength
+                        and hole_card_strength > 0.5
+                        and can_raise
+                    ):  # hand strenght is good and our range is better
+                        return valid_actions[2]["action"], get_bet_size(
+                            pot_size,
+                            2 / 3,
+                            valid_actions[2]["amount"]["max"],
+                            small_blind_size,
+                        )
+                    else:  # check bad turn back
+                        return valid_actions[1]["action"], valid_actions[1]["amount"]
+                else:
+                    adjust_range_upper(villain_range, 0.5)
+                    if (
+                        hero_range_strength > villain_range_strength
+                        and hole_card_strength > 0.7
+                        and can_raise
+                    ):
+                        # checkraise strong stuff
+                        adjust_range_upper(hero_range, 0.7)
+                        return valid_actions[2]["action"], get_bet_size(
+                            pot_size,
+                            2 / 3,
+                            valid_actions[2]["amount"]["max"],
+                            small_blind_size,
+                        )
+                    elif hole_card_strength > 0.5:  # call medium strenth
+                        adjust_range_lower(hero_range, 0.5)
+                        adjust_range_upper(hero_range, 0.7)
+                        return (
+                            valid_actions[1]["action"],
+                            valid_actions[1]["amount"],
+                        )
+                    else:
+                        # fold if hand is bad
+                        return (
+                            valid_actions[0]["action"],
+                            valid_actions[0]["amount"],
+                        )
+            else:
+                if valid_actions[1]["amount"] == 0:
+                    # we are first to act as small blind
+                    if hero_range_strength < villain_range_strength:
+                        # check if we are out of position and its bad for range
+                        return valid_actions[1]["action"], valid_actions[1]["amount"]
+                    else:
+                        # if good for our range and our hand is strong, lets lead
+                        if hole_card_strength >= 0.6 and can_raise:
+                            adjust_range_upper(hero_range, 0.6)
+                            return valid_actions[2]["action"], get_bet_size(
+                                pot_size,
+                                2 / 3,
+                                valid_actions[2]["amount"]["max"],
+                                small_blind_size,
+                            )
+                        else:  # check if bad for range or hand weak
+                            adjust_range_lower(hero_range, 0.6)
+                            return (
+                                valid_actions[1]["action"],
+                                valid_actions[1]["amount"],
+                            )
+                else:  # big blind has bet at us
+                    adjust_range_upper(villain_range, 0.5)
+                    if (
+                        hole_card_strength >= 0.7 and can_raise
+                    ):  # let's check raise our strong stuff
+                        adjust_range_upper(hero_range, 0.7)
+                        return valid_actions[2]["action"], get_bet_size(
+                            pot_size,
+                            2 / 3,
+                            valid_actions[2]["amount"]["max"],
+                            small_blind_size,
+                        )
+                    elif hole_card_strength >= 0.5:  # call our middling hands
+                        adjust_range_upper(hero_range, 0.5)
+                        return valid_actions[1]["action"], valid_actions[1]["amount"]
+                    else:  # fold our trash
+                        return valid_actions[0]["action"], valid_actions[0]["amount"]
+
+        # RIVER
+        elif round_state["street"] == "river":
+            hero_range_strength = calculate_range_strength(hero_range, community_cards)
+            villain_range_strength = calculate_range_strength(
+                villain_range, community_cards
+            )
+            print("hero range strength ", hero_range_strength)
+            print("villain range strength ", villain_range_strength)
+            hole_card_strength = estimate_hole_card_win_rate(
+                1000, 2, gen_cards(hole_card), gen_cards(community_cards)
+            )
+            print("hero hole card strength ", hole_card_strength)
+            if pos:
+                # we are the big blind
+                if valid_actions[1]["amount"] == 0:  # checks to us
+                    if (
+                        hero_range_strength - villain_range_strength > 0.1 and can_raise
+                    ):  # if we have significant range advantage lets bet this no matter what
+                        return valid_actions[2]["action"], get_bet_size(
+                            pot_size,
+                            2 / 3,
+                            valid_actions[2]["amount"]["max"],
+                            small_blind_size,
+                        )
+                    elif (
+                        hole_card_strength > 0.65 and can_raise
+                    ):  # lets still go for value with strong stuff
+                        return valid_actions[2]["action"], get_bet_size(
+                            pot_size,
+                            2 / 3,
+                            valid_actions[2]["amount"]["max"],
+                            small_blind_size,
+                        )
+                    else:  # check bad flop back
+                        return valid_actions[1]["action"], valid_actions[1]["amount"]
+                else:
+                    if (
+                        hero_range_strength > villain_range_strength
+                        and hole_card_strength > 0.7
+                        and can_raise
+                    ):
+                        # checkraise strong stuff
+                        adjust_range_upper(hero_range, 0.7)
+                        return valid_actions[2]["action"], get_bet_size(
+                            pot_size,
+                            2 / 3,
+                            valid_actions[2]["amount"]["max"],
+                            small_blind_size,
+                        )
+                    elif hole_card_strength > 0.5:  # call medium strenth
+                        adjust_range_lower(hero_range, 0.5)
+                        adjust_range_upper(hero_range, 0.7)
+                        return (
+                            valid_actions[1]["action"],
+                            valid_actions[1]["amount"],
+                        )
+                    else:
+                        # fold if hand is bad
+                        return (
+                            valid_actions[0]["action"],
+                            valid_actions[0]["amount"],
+                        )
+            else:
+                if valid_actions[1]["amount"] == 0:
+                    # we are first to act as small blind
+                    if hero_range_strength < villain_range_strength:
+                        # check if we are out of position and its bad for range
+                        return valid_actions[1]["action"], valid_actions[1]["amount"]
+                    else:
+                        # if good for our range and our hand is strong, lets lead
+                        if hole_card_strength >= 0.6 and can_raise:
+                            adjust_range_upper(hero_range, 0.6)
+                            return valid_actions[2]["action"], get_bet_size(
+                                pot_size,
+                                2 / 3,
+                                valid_actions[2]["amount"]["max"],
+                                small_blind_size,
+                            )
+                        else:  # check if bad for range or hand weak
+                            adjust_range_lower(hero_range, 0.6)
+                            return (
+                                valid_actions[1]["action"],
+                                valid_actions[1]["amount"],
+                            )
+                else:  # big blind has bet at us
+                    if (
+                        hole_card_strength >= 0.7 and can_raise
+                    ):  # let's check raise our strong stuff
+                        adjust_range_upper(hero_range, 0.7)
+                        return valid_actions[2]["action"], get_bet_size(
+                            pot_size,
+                            2 / 3,
+                            valid_actions[2]["amount"]["max"],
+                            small_blind_size,
+                        )
+                    elif hole_card_strength >= 0.5:  # call our middling hands
+                        adjust_range_upper(hero_range, 0.5)
+                        return valid_actions[1]["action"], valid_actions[1]["amount"]
+                    else:  # fold our trash
+                        return valid_actions[0]["action"], valid_actions[0]["amount"]
         print("======================")
 
         return action, amount  # action returned here is sent to the poker engine
@@ -197,10 +482,8 @@ def convert_hole_cards(hole_cards: list):
         converted_hole_cards = hole_cards[1][1] + hole_cards[0][1]
 
     if hole_cards[0][0] == hole_cards[1][0]:
-        print("suited hand")
         converted_hole_cards += "s"
     else:
-        print("offsuit hand")
         converted_hole_cards += "o"
     print("converted hole cards: " + converted_hole_cards)
     return converted_hole_cards
@@ -256,6 +539,7 @@ def calculate_range_strength(current_range, community_cards):
     range_strength = 0
     perm_total = 0
     for combo in current_range:
+        combo_strength = 0
         # need to turn the converted combo back into PyPokerEngine format for hand strenght calc
         if len(combo[0]) == 2:
             permutations, adjusted_weight = generate_pocket_pairs(
@@ -277,7 +561,11 @@ def calculate_range_strength(current_range, community_cards):
                 community_card=gen_cards(community_cards),
             )
             perm_total += 1
-            range_strength += hand_strength * adjusted_weight / len(permutations)
+            combo_strength += hand_strength * adjusted_weight / len(permutations)
+            combo.append(combo_strength)
+        range_strength += combo_strength
+    if perm_total == 0:  # we have no clue what range is here
+        return 0.5
     return range_strength / perm_total
 
 
@@ -315,21 +603,26 @@ def generate_suited_combos(combo, community_cards, weight):
     return suited_combos, weight * len(suited_combos) / 4
 
 
-# def create_combos_list():
-#     with open("./ranges/sb/20/allin.json") as json_file:
-#         data = json.load(json_file)
-#         for combo in data["players_info"][0]["simple_hand_counters"]:
-#             COMBOS.append(combo)
-#     print(COMBOS)
+def get_bet_size(pot_size, ratio, max, small_blind_amount):
+    bet_size = (pot_size * ratio // small_blind_amount) * small_blind_amount
+    if bet_size > max:
+        return max
+    return bet_size
 
 
-# combo_weights = []
-# for i in range(len(COMBOS)):
-#     current_combo = COMBOS[i]
-#     if len(current_combo) == 2:
-#         combo_weights.append(6)
-#     elif current_combo[2] == "s":
-#         combo_weights.append(4)
-#     else:
-#         combo_weights.append(12)
-# print(combo_weights)
+def adjust_range_upper(currrent_range, threshold):
+    for combo in currrent_range:
+        if combo[2] < threshold:
+            currrent_range.remove(combo)
+    return currrent_range
+
+
+def adjust_range_lower(currrent_range, threshold):
+    for combo in currrent_range:
+        if combo[2] > threshold:
+            currrent_range.remove(combo)
+    return currrent_range
+
+
+def calculate_pot_odds(pot_size, call_amount):
+    return pot_size / call_amount
